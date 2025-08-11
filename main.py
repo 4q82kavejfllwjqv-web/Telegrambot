@@ -14,7 +14,7 @@ from telegram.ext import (
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@YourChannelName")  # الآن يدعم متغير البيئة
+CHANNEL_USERNAME = "@EEEEEKEE" # الآن يدعم متغير البيئة
 
 # قاعدة بيانات SQLite
 conn = sqlite3.connect("users.db", check_same_thread=False)
@@ -336,3 +336,4 @@ if __name__ == "__main__":
 
     print("بوت التليجرام شغال!")
     app_bot.run_polling()
+
