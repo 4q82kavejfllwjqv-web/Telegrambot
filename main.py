@@ -1,5 +1,4 @@
 import os
-import random
 import requests
 import threading
 import sqlite3
@@ -14,15 +13,14 @@ from telegram.ext import (
 )
 from openai import OpenAI
 
-# مفاتيح API وتوكن بوت
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@YourChannelName")
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@YourChannelName")  # ضع اسم قناتك هنا
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# إعداد قاعدة بيانات للمستخدمين (إذا تريد)
+# قاعدة بيانات SQLite
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""CREATE TABLE IF NOT EXISTS users (
@@ -44,7 +42,152 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
 
-# دالة تسجيل المستخدمين
+GENRES = {
+    "رومانسي": 10749,
+    "أكشن": 28,
+    "فنتازيا": 14,
+    "كوميدي": 35,
+    "رعب": 27,
+    "دراما": 18
+}
+
+COMPANIES = {
+    "نتفلكس": 213,
+    "HBO": 49,
+    "Apple TV": 2552,
+    "Warner Bros": 174
+}
+
+def build_menu(buttons, n_cols, header_buttons=None, footer_buttons=None):
+    menu = [buttons[i:i + n_cols] for i in range(0, len(buttons), n_cols)]
+    if header_buttons:
+        menu.insert(0, header_buttons)
+    if footer_buttons:
+        menu.append(footer_buttons)
+    return menu
+
+def get_movies_by_genre(genre_id, page=1):
+    url = "https://api.themoviedb.org/3/discover/movie"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "with_genres": genre_id,
+        "language": "ar",
+        "sort_by": "popularity.desc",
+        "page": page
+    }
+    res = requests.get(url, params=params).json()
+    return res.get("results", [])[:10]
+
+def get_movies_by_company(company_id, page=1):
+    url = "https://api.themoviedb.org/3/discover/movie"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "with_companies": company_id,
+        "language": "ar",
+        "sort_by": "popularity.desc",
+        "page": page
+    }
+    res = requests.get(url, params=params).json()
+    return res.get("results", [])[:10]
+
+def get_movies_sorted_by_rating(desc=True, page=1):
+    url = "https://api.themoviedb.org/3/discover/movie"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "language": "ar",
+        "sort_by": "vote_average.desc" if desc else "vote_average.asc",
+        "vote_count.gte": 1000,
+        "page": page
+    }
+    res = requests.get(url, params=params).json()
+    return res.get("results", [])[:10]
+
+def get_movie_details(movie_id):
+    url = f"https://api.themoviedb.org/3/movie/{movie_id}"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "language": "ar"
+    }
+    res = requests.get(url, params=params).json()
+    return res
+
+def format_movie_detail(movie):
+    title_en = movie.get("original_title", "No Title")
+    overview_ar = movie.get("overview", "لا يوجد وصف")
+    release_date = movie.get("release_date", "غير معروف")
+    rating = movie.get("vote_average", "N/A")
+    poster_path = movie.get("poster_path")
+    poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
+
+    text = f"*{title_en}* ({release_date[:4]})\n⭐ التقييم: {rating}\n\n{overview_ar}"
+    return text, poster_url
+
+async def send_movies_list(update, context, movies, category, id_or_type, page):
+    query = update.callback_query
+    if not movies:
+        await query.edit_message_text("لا توجد نتائج.")
+        return
+
+    context.user_data["current_movies"] = movies
+    context.user_data["category"] = category
+    context.user_data["id_or_type"] = id_or_type
+    context.user_data["page"] = page
+
+    first_movie_id = movies[0]["id"]
+    first_movie = get_movie_details(first_movie_id)
+    text, poster_url = format_movie_detail(first_movie)
+
+    buttons = []
+    for i, movie in enumerate(movies):
+        prefix = "👉 " if i == 0 else ""
+        buttons.append(InlineKeyboardButton(f"{prefix}{movie.get('original_title','No Title')}", callback_data=f"select_movie_{i}"))
+
+    nav_buttons = [
+        InlineKeyboardButton("غيرهم", callback_data=f"{category}_{id_or_type}_{page + 1}"),
+        InlineKeyboardButton("تغيير القائمة", callback_data="start_menu")
+    ]
+
+    keyboard = InlineKeyboardMarkup(build_menu(buttons, 2) + [nav_buttons])
+
+    if poster_url:
+        await query.edit_message_media(
+            media=InputMediaPhoto(media=poster_url, caption=text, parse_mode="Markdown"),
+            reply_markup=keyboard
+        )
+    else:
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+async def show_genres(update, context):
+    query = update.callback_query
+    buttons = [InlineKeyboardButton(name, callback_data=f"genre_{gid}_1") for name, gid in GENRES.items()]
+    keyboard = InlineKeyboardMarkup(build_menu(buttons, 2))
+    await query.edit_message_text("اختر التصنيف:", reply_markup=keyboard)
+
+async def show_companies(update, context):
+    query = update.callback_query
+    buttons = [InlineKeyboardButton(name, callback_data=f"company_{cid}_1") for name, cid in COMPANIES.items()]
+    keyboard = InlineKeyboardMarkup(build_menu(buttons, 2))
+    await query.edit_message_text("اختر شركة الإنتاج:", reply_markup=keyboard)
+
+async def show_ratings(update, context):
+    query = update.callback_query
+    buttons = [
+        InlineKeyboardButton("أعلى 10 أفلام تقييمًا", callback_data="rating_high_1"),
+        InlineKeyboardButton("أقل 10 أفلام تقييمًا", callback_data="rating_low_1")
+    ]
+    keyboard = InlineKeyboardMarkup(build_menu(buttons, 1))
+    await query.edit_message_text("اختر:", reply_markup=keyboard)
+
+def is_admin(user_id):
+    return user_id in ADMINS
+
+async def check_subscription(user_id, bot):
+    try:
+        member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except:
+        return False
+
 async def register_user(user):
     now = datetime.utcnow().isoformat()
     cursor.execute(
@@ -57,108 +200,179 @@ async def register_user(user):
     )
     conn.commit()
 
-# دوال TMDb للبحث عن أفلام
-def search_movies_tmdb(query, page=1):
-    url = "https://api.themoviedb.org/3/search/movie"
-    params = {
-        "api_key": TMDB_API_KEY,
-        "query": query,
-        "language": "ar",
-        "page": page,
-        "include_adult": False
-    }
-    res = requests.get(url, params=params).json()
-    return res.get("results", [])[:5]
+# الـ system prompt لذوق اللهجة العراقية والود
+SYSTEM_PROMPT = (
+    "أنت مساعد ذكي وحنون باللهجة العراقية، ترد بسرعة وبلهجة عامية عراقية، "
+    "تحافظ على محادثة المستخدم وتذكره بعبارات مثل 'نورت استاذي' لما يدخل. "
+    "كون لطيف، ودود، وتفاعل دائم."
+)
 
-def format_movie_detail(movie):
-    title = movie.get("original_title", "لا يوجد عنوان")
-    overview = movie.get("overview", "لا يوجد وصف")
-    release_date = movie.get("release_date", "غير معروف")
-    rating = movie.get("vote_average", "N/A")
-    poster_path = movie.get("poster_path")
-    poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
+async def start(update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    subscribed = await check_subscription(user.id, context.bot)
+    if not subscribed:
+        await update.message.reply_text(f"يرجى الاشتراك في القناة أولاً: {CHANNEL_USERNAME}")
+        return
+    await register_user(user)
+    buttons = [
+        [InlineKeyboardButton("التصنيفات", callback_data="show_genres")],
+        [InlineKeyboardButton("المنصات", callback_data="show_companies")],
+        [InlineKeyboardButton("مشاهدة فيلم حسب البحث", callback_data="search_movie")],
+        [InlineKeyboardButton("الذكاء الاصطناعي", callback_data="ai_chat")],  # زر الذكاء الاصطناعي بدل الرياضة
+    ]
+    await update.message.reply_text("اختر من القائمة:", reply_markup=InlineKeyboardMarkup(buttons))
 
-    text = f"*{title}* ({release_date[:4]})\n⭐ التقييم: {rating}\n\n{overview}"
-    return text, poster_url
+async def generate_ai_reply(user_message: str, context) -> str:
+    if "history" not in context.user_data:
+        context.user_data["history"] = []
 
-# قائمة إيموجي للتفاعل العشوائي
-EMOJIS = ["😀", "🤣", "😊", "👍", "🙌", "😎", "🔥", "✨"]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + context.user_data["history"] + [{"role": "user", "content": user_message}]
 
-# دالة تحدد إذا النص وصف فيلم أو لا باستخدام GPT
-async def is_movie_description(text):
-    prompt = (
-        "هل النص التالي هو وصف لفيلم أو مسلسل؟ أجب بنعم أو لا فقط.\n\n"
-        f"النص: \"{text}\"\n"
-    )
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
+            messages=messages
         )
-        answer = response.choices[0].message.content.strip().lower()
-        return "نعم" in answer or "yes" in answer
-    except Exception:
-        return False
+        reply = response.choices[0].message.content
 
-# الردود التفاعلية البسيطة (عراقي بسيط + سمايلات أحيانًا)
-async def chat_response(text):
-    prompt = (
-        "أنت صديق عراقي ودود، تتفاعل مع كلام الناس بشكل عفوي وحميمي، "
-        "تحب تضيف سمايلات أحيانًا، ولا ترد بشكل رسمي. "
-        "إليك رسالة المستخدم:\n"
-        f"{text}\n"
-        "كيف ترد عليه؟"
-    )
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        reply = response.choices[0].message.content.strip()
-        # أضف إيموجي عشوائي 20% من الوقت
-        if random.random() < 0.2:
-            reply += " " + random.choice(EMOJIS)
+        # حفظ المحادثة
+        context.user_data["history"].append({"role": "user", "content": user_message})
+        context.user_data["history"].append({"role": "assistant", "content": reply})
+
+        # تقليم المحادثة لو صارت طويلة
+        if len(context.user_data["history"]) > 10:
+            context.user_data["history"] = context.user_data["history"][-10:]
+
         return reply
     except Exception as e:
-        return "آسف، صار خطأ."
+        return f"حدث خطأ: {e}"
 
-# معالجة رسائل المستخدم
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await register_user(user)
 
-    text = update.message.text.strip()
+    # حالة البحث في الأفلام
+    if context.user_data.get("waiting_for_search"):
+        query_text = update.message.text.strip()
+        search_keyword = query_text.replace(" ", "+")
+        search_url = f"https://moviebox.ph/web/searchResult?keyword={search_keyword}"
+        context.user_data["waiting_for_search"] = False
+        await update.message.reply_text(f"نتائج البحث هنا:\n{search_url}\n\nيمكنك فتح الرابط ومتابعة البحث.")
+        return
 
-    # نتحقق إذا الرسالة وصف فيلم
-    if await is_movie_description(text):
-        # إذا نعم، نبحث في TMDb
-        movies = search_movies_tmdb(text)
-        if not movies:
-            await update.message.reply_text("ما لقيت فلم يناسب وصفك 😔")
-            return
-        # نعرض أول 3 أفلام
-        msg = "لقيت لك أفلام تناسب الوصف:\n\n"
-        for movie in movies[:3]:
-            title = movie.get("original_title", "لا يوجد عنوان")
-            date = movie.get("release_date", "غير معروف")[:4]
-            msg += f"🎬 *{title}* ({date})\n"
-        msg += "\nاكتب وصف ثاني لو تريد."
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    else:
-        # إذا مو وصف فلم، نرد بشكل تفاعلي
-        reply = await chat_response(text)
+    # حالة دردشة الذكاء الاصطناعي
+    if context.user_data.get("waiting_for_ai"):
+        user_message = update.message.text
+        reply = await generate_ai_reply(user_message, context)
         await update.message.reply_text(reply)
+        return
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("شكراً لتفاعلك! استخدم /start للبدء.")
+
+async def stats(update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("هذه الأوامر للأدمن فقط.")
+        return
+    cutoff = datetime.utcnow() - timedelta(days=7)
+    cutoff_iso = cutoff.isoformat()
+    cursor.execute("SELECT user_id, username, last_active FROM users WHERE last_active > ?", (cutoff_iso,))
+    rows = cursor.fetchall()
+    if not rows:
+        await update.message.reply_text("لا يوجد مستخدمين نشطين خلال الأسبوع الماضي.")
+        return
+    msg = "المستخدمين النشطين خلال 7 أيام:\n"
+    for row in rows:
+        uid, username, last_active = row
+        msg += f"- {username or 'لا يوجد اسم'} (ID: {uid}) آخر نشاط: {last_active}\n"
+    await update.message.reply_text(msg)
+
+async def select_movie(update, context):
+    query = update.callback_query
+    await query.answer()
+    index = int(query.data.split("_")[-1])
+
+    movies = context.user_data.get("current_movies", [])
+    if not movies or index >= len(movies):
+        await query.edit_message_text("حدث خطأ، حاول مرة أخرى.")
+        return
+
+    movie_id = movies[index]["id"]
+    movie = get_movie_details(movie_id)
+    text, poster_url = format_movie_detail(movie)
+
+    buttons = []
+    for i, movie_i in enumerate(movies):
+        prefix = "👉 " if i == index else ""
+        buttons.append(InlineKeyboardButton(f"{prefix}{movie_i.get('original_title','No Title')}", callback_data=f"select_movie_{i}"))
+
+    nav_buttons = [
+        InlineKeyboardButton("غيرهم", callback_data=f"{context.user_data['category']}_{context.user_data['id_or_type']}_{context.user_data['page']}"),
+        InlineKeyboardButton("تغيير القائمة", callback_data="start_menu")
+    ]
+
+    keyboard = InlineKeyboardMarkup(build_menu(buttons, 2) + [nav_buttons])
+
+    if poster_url:
+        await query.edit_message_media(
+            media=InputMediaPhoto(media=poster_url, caption=text, parse_mode="Markdown"),
+            reply_markup=keyboard
+        )
+    else:
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+async def button_handler(update, context):
+    query = update.callback_query
+    data = query.data
+    await query.answer()
+
     user = update.effective_user
     await register_user(user)
-    await update.message.reply_text("هلا! أرسل لي وصف فلم أو أي كلام، وأنا أساعدك.")
+
+    if data == "start_menu":
+        await start(update, context)
+    elif data == "show_genres":
+        await show_genres(update, context)
+    elif data == "show_companies":
+        await show_companies(update, context)
+    elif data == "show_ratings":
+        await show_ratings(update, context)
+    elif data.startswith("genre_"):
+        parts = data.split("_")
+        genre_id = parts[1]
+        page = int(parts[2])
+        movies = get_movies_by_genre(genre_id, page)
+        await send_movies_list(update, context, movies, "genre", genre_id, page)
+    elif data.startswith("company_"):
+        parts = data.split("_")
+        company_id = parts[1]
+        page = int(parts[2])
+        movies = get_movies_by_company(company_id, page)
+        await send_movies_list(update, context, movies, "company", company_id, page)
+    elif data.startswith("rating_"):
+        parts = data.split("_")
+        desc = True if parts[1] == "high" else False
+        page = int(parts[2])
+        movies = get_movies_sorted_by_rating(desc, page)
+        await send_movies_list(update, context, movies, "rating", parts[1], page)
+    elif data.startswith("select_movie_"):
+        await select_movie(update, context)
+    elif data == "search_movie":
+        await query.edit_message_text("أرسل كلمة البحث:")
+        context.user_data["waiting_for_search"] = True
+    elif data == "ai_chat":
+        await query.edit_message_text("هلا! أرسل لي أي شي وأنا أجاوبك بالذكاء الاصطناعي 🤖")
+        context.user_data["waiting_for_ai"] = True
+    else:
+        await query.edit_message_text("اختيار غير معروف.")
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
 
     app_bot = ApplicationBuilder().token(TOKEN).build()
     app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("stats", stats))
+    app_bot.add_handler(CallbackQueryHandler(button_handler))
     app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("بوت التليجرام شغال!")
