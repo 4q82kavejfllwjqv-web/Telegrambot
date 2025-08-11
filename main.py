@@ -14,7 +14,7 @@ from telegram.ext import (
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
-CHANNEL_USERNAME = "@YourChannelName"  # استبدلها برابط قناتك
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@YourChannelName")  # الآن يدعم متغير البيئة
 
 # قاعدة بيانات SQLite
 conn = sqlite3.connect("users.db", check_same_thread=False)
