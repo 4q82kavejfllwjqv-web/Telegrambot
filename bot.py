@@ -13,14 +13,16 @@ from telegram.ext import (
 )
 from openai import OpenAI
 
+# --- متغيرات البيئة ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@YourChannelName")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@YourChannelName")  # ضع اسم قناتك هنا
 
+# --- إعداد OpenAI ---
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# قاعدة بيانات SQLite
+# --- قاعدة بيانات SQLite ---
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""CREATE TABLE IF NOT EXISTS users (
@@ -33,6 +35,7 @@ conn.commit()
 
 ADMINS = [722400128]  # معرف الأدمنين
 
+# --- Flask لاستمرار البوت أونلاين ---
 app = Flask("")
 
 @app.route("/")
@@ -42,6 +45,7 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
 
+# --- بيانات التصنيفات والشركات ---
 GENRES = {
     "رومانسي": 10749,
     "أكشن": 28,
@@ -58,6 +62,7 @@ COMPANIES = {
     "Warner Bros": 174
 }
 
+# --- دوال مساعدة ---
 def build_menu(buttons, n_cols, header_buttons=None, footer_buttons=None):
     menu = [buttons[i:i + n_cols] for i in range(0, len(buttons), n_cols)]
     if header_buttons:
@@ -122,6 +127,7 @@ def format_movie_detail(movie):
     text = f"*{title_en}* ({release_date[:4]})\n⭐ التقييم: {rating}\n\n{overview_ar}"
     return text, poster_url
 
+# --- دوال الواجهة ---
 async def send_movies_list(update, context, movies, category, id_or_type, page):
     query = update.callback_query
     if not movies:
@@ -169,14 +175,11 @@ async def show_companies(update, context):
     keyboard = InlineKeyboardMarkup(build_menu(buttons, 2))
     await query.edit_message_text("اختر شركة الإنتاج:", reply_markup=keyboard)
 
-async def show_ratings(update, context):
+async def send_ai_prompt(update, context):
     query = update.callback_query
-    buttons = [
-        InlineKeyboardButton("أعلى 10 أفلام تقييمًا", callback_data="rating_high_1"),
-        InlineKeyboardButton("أقل 10 أفلام تقييمًا", callback_data="rating_low_1")
-    ]
-    keyboard = InlineKeyboardMarkup(build_menu(buttons, 1))
-    await query.edit_message_text("اختر:", reply_markup=keyboard)
+    await query.answer()
+    await query.edit_message_text("أرسل لي أي سؤال، وأنا أجاوبك بود ومحبة 😊")
+    context.user_data["ai_mode"] = True
 
 def is_admin(user_id):
     return user_id in ADMINS
@@ -200,13 +203,6 @@ async def register_user(user):
     )
     conn.commit()
 
-# الـ system prompt لذوق اللهجة العراقية والود
-SYSTEM_PROMPT = (
-    "أنت مساعد ذكي وحنون باللهجة العراقية، ترد بسرعة وبلهجة عامية عراقية، "
-    "تحافظ على محادثة المستخدم وتذكره بعبارات مثل 'نورت استاذي' لما يدخل. "
-    "كون لطيف، ودود، وتفاعل دائم."
-)
-
 async def start(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     subscribed = await check_subscription(user.id, context.bot)
@@ -217,57 +213,41 @@ async def start(update, context: ContextTypes.DEFAULT_TYPE):
     buttons = [
         [InlineKeyboardButton("التصنيفات", callback_data="show_genres")],
         [InlineKeyboardButton("المنصات", callback_data="show_companies")],
+        [InlineKeyboardButton("الذكاء الاصطناعي", callback_data="ai_chat")],
         [InlineKeyboardButton("مشاهدة فيلم حسب البحث", callback_data="search_movie")],
-        [InlineKeyboardButton("الذكاء الاصطناعي", callback_data="ai_chat")],  # زر الذكاء الاصطناعي بدل الرياضة
     ]
     await update.message.reply_text("اختر من القائمة:", reply_markup=InlineKeyboardMarkup(buttons))
-
-async def generate_ai_reply(user_message: str, context) -> str:
-    if "history" not in context.user_data:
-        context.user_data["history"] = []
-
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + context.user_data["history"] + [{"role": "user", "content": user_message}]
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages
-        )
-        reply = response.choices[0].message.content
-
-        # حفظ المحادثة
-        context.user_data["history"].append({"role": "user", "content": user_message})
-        context.user_data["history"].append({"role": "assistant", "content": reply})
-
-        # تقليم المحادثة لو صارت طويلة
-        if len(context.user_data["history"]) > 10:
-            context.user_data["history"] = context.user_data["history"][-10:]
-
-        return reply
-    except Exception as e:
-        return f"حدث خطأ: {e}"
 
 async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await register_user(user)
 
-    # حالة البحث في الأفلام
-    if context.user_data.get("waiting_for_search"):
+    if context.user_data.get("ai_mode"):
+        user_message = update.message.text
+        try:
+            messages = [{"role": "user", "content": user_message}]
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages
+            )
+            reply = response.choices[0].message.content
+        except Exception as e:
+            reply = f"حدث خطأ: {e}"
+
+        await update.message.reply_text(reply)
+        # تحب تخلي المحادثة مستمرة تخلي ai_mode صحيح، أو تخليه False بعد الرد:
+        # context.user_data["ai_mode"] = False
+
+    elif context.user_data.get("waiting_for_search"):
         query_text = update.message.text.strip()
         search_keyword = query_text.replace(" ", "+")
         search_url = f"https://moviebox.ph/web/searchResult?keyword={search_keyword}"
+
         context.user_data["waiting_for_search"] = False
         await update.message.reply_text(f"نتائج البحث هنا:\n{search_url}\n\nيمكنك فتح الرابط ومتابعة البحث.")
-        return
 
-    # حالة دردشة الذكاء الاصطناعي
-    if context.user_data.get("waiting_for_ai"):
-        user_message = update.message.text
-        reply = await generate_ai_reply(user_message, context)
-        await update.message.reply_text(reply)
-        return
-
-    await update.message.reply_text("شكراً لتفاعلك! استخدم /start للبدء.")
+    else:
+        await update.message.reply_text("شكراً لتفاعلك! استخدم /start للبدء.")
 
 async def stats(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -326,6 +306,7 @@ async def button_handler(update, context):
     data = query.data
     await query.answer()
 
+    # تسجيل نشاط المستخدم في كل تفاعل
     user = update.effective_user
     await register_user(user)
 
@@ -335,8 +316,8 @@ async def button_handler(update, context):
         await show_genres(update, context)
     elif data == "show_companies":
         await show_companies(update, context)
-    elif data == "show_ratings":
-        await show_ratings(update, context)
+    elif data == "ai_chat":
+        await send_ai_prompt(update, context)
     elif data.startswith("genre_"):
         parts = data.split("_")
         genre_id = parts[1]
@@ -360,9 +341,6 @@ async def button_handler(update, context):
     elif data == "search_movie":
         await query.edit_message_text("أرسل كلمة البحث:")
         context.user_data["waiting_for_search"] = True
-    elif data == "ai_chat":
-        await query.edit_message_text("هلا! أرسل لي أي شي وأنا أجاوبك بالذكاء الاصطناعي 🤖")
-        context.user_data["waiting_for_ai"] = True
     else:
         await query.edit_message_text("اختيار غير معروف.")
 
@@ -377,4 +355,3 @@ if __name__ == "__main__":
 
     print("بوت التليجرام شغال!")
     app_bot.run_polling()
-
